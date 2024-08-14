@@ -451,6 +451,27 @@ if($collectResults['systemDNS'] -eq $success) {
     Write-Result "`nSystem DNS access test failed - skipping"
 }
 
+$region_hostnames = @{
+    "PROD0" = "af45696a9d98ae9b5.awsglobalaccelerator.com"
+    "PROD1" = "af39f12a3abbc288b.awsglobalaccelerator.com"
+    "PROD2" = "a96ba037364f66208.awsglobalaccelerator.com"
+    "PROD3" = "a55ca1360a42b9e25.awsglobalaccelerator.com"
+    "PROD4" = "a66562e2168e6f91e.awsglobalaccelerator.com"
+    "PROD5" = "acec48d591c5f7b0c.awsglobalaccelerator.com"
+    "PROD6" = "a28fbfe39bd2d0a91.awsglobalaccelerator.com"
+    "PROD7" = "a5cd470aace53e730.awsglobalaccelerator.com"
+}
+
+if($collectResults['accessDNSProt'] -eq $success) {
+    $region_hostnames.getEnumerator() | Sort-Object -property:Key | ForEach {
+        Write-Result "`nCheck latency to Sophos DNS Protection ($($_.key))"
+        $ips = Resolve-DnsName -Name $_.value -Type A -Server "193.84.4.4" -DnsOnly -ErrorAction Stop | Select-Object -Property IPAddress
+        Test-DNSLatency -testname www.example.com -res $ips[0].IPAddress
+    }
+} else {
+    Write-Result "`nSophos DNS Protection access test failed - skipping"
+}
+
 Write-Result "End of test 8`n------"
 
 # Get the device's DNS settings
