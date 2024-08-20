@@ -41,6 +41,8 @@ It runs through the following tests:
 
    1. Secondly by using the system DNS resolver settings
 
+   1. Finally by querying the region-specific POPs directly (to retrieve per-region latency numbers)
+
 After the tests, it runs a couple more diagnostic commands
 
 - Outputs a prioritized list of interfaces together with their DNS settings, to help check if the device is configured correctly or if Windows may be directing queries to other services
