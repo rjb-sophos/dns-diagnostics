@@ -9,9 +9,9 @@ It runs through the following tests:
 
 1. Test if DNS resolution is working by just issuing DNS requests using system defaults
 
-2. 1. Resolve www.sophos.com
+   1. Resolve www.sophos.com
 
-   2. Resolve www.google.com
+   1. Resolve www.google.com
 
 1. Test if the system is set up to use DNS Protection by doing a DNS lookup for dns.access.sophos.com using system defaults
 
@@ -40,6 +40,8 @@ It runs through the following tests:
    1. First by querying 193.84.4.4 directly
 
    1. Secondly by using the system DNS resolver settings
+
+   1. Finally by querying the region-specific POPs directly (to retrieve per-region latency numbers)
 
 After the tests, it runs a couple more diagnostic commands
 
