@@ -4,16 +4,31 @@
 # DNS setup issues related to Sophos DNS Protection
 #
 # Creates/overwrites output into $outputFile - opens the output in Notepad
+#   Run with -no_open to not open Notepad or set it to $true below
+#
+# Use $tenant_id to provide the 'The unique ID for this Sophos Central account'
+# shown on the SUpport settings page in Central. This enables a check to
+# confirm your IP address is registered to your account and not somebody
+# else's. 
 #
 # Make $outputFile an empty string to output all detail to the console
 #
 # To allow permission to run this script, run the following command first:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Unrestricted
 # This allows running of scripts in the current PS console until it's closed
+param(
+    [switch]$skip_leaktest = $false,
+    [switch]$skip_regions = $false,
+    [string]$outputFile = "network_diagnostics.txt",
+    [switch]$no_open = $false,
+    [string]$tenant_id = "none",
+    [switch]$no_html = $false
+    )
 
 $knownIP_resolver3_opendns="208.67.222.220"
 $knownIP_api_myip="172.67.75.163"
-$outputFile = "network_diagnostics.txt"
+
+
 
 if( $outputFile -ne "") {
     Write-Host "Test output will be written to $outputFile"
@@ -180,7 +195,7 @@ Function Test-DnsLeaks {
         Invoke-ErrorHandler -Message "Error, failed to download results of DNS Leak test"
     }
     # Unpack the text file and print the servers
-    Write-Result "DNS leak test Results`n====================="
+    Write-Result "`nDNS leak test Results`n====================="
     Get-Content -Path $results.FullName | ForEach-Object {
         $line=$_
         $cols=($line -split "\|")
@@ -220,10 +235,13 @@ $collectResults=@{
     reachDNSProt5=$notTested
     accessDNSProt=$notTested
     queryRedirection=$notTested
+    DNSProtSrcIP=$notTested
+    location=$notTested
+    locationWithTenant=$notTested
 }
 
 # Tests start here
-Write-Result "Test starting - DNS Diagnostics at $(Get-Date -Format "yyyy-MM-dd hh:mm:ss K")`n"
+Write-Result "Test starting - DNS Diagnostics at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss K")`n"
 
 # Test General DNS resolution
 Write-Result "Test 1a: Testing if system DNS resolution is working - resolving www.sophos.com..."
@@ -279,8 +297,12 @@ if($collectResults['systemDNS'] -eq $success) {
     if($collectResults['systemUsingDNSProt'] -eq $success) {
         try {
             $blockpageResponse = Invoke-WebRequest -Uri "http://dns.access.sophos.com" -ErrorAction Stop
-            Write-Result "Blockpage content:"
-            Write-Result $blockpageResponse.RawContent
+            if($no_html) {
+                Write-Result "Not writing blockpage content here"
+                } else {
+                Write-Result "Blockpage content:"
+                Write-Result $blockpageResponse.RawContent
+            }
             if ($blockpageResponse.RawContent -like "*Welcome to Sophos DNS Protection*") {
                 Write-Result "Blockpage service accessible" 
                 $collectResults['gotDNSProtWelcomePage']=$success
@@ -314,8 +336,10 @@ if($collectResults['systemDNS'] -eq $success) {
                 $collectResults['gotDNSProtWelcomePageHTTPS']=$success
             } else {
                 Write-Result "HTTPS blockpage content not recognized" 
-                Write-Result "Blockpage content:" 
-                Write-Result $blockpageResponse.RawContent 
+                if(!$no_html) {
+                    Write-Result "Blockpage content:" 
+                    Write-Result $blockpageResponse.RawContent 
+                }
                 $collectResults['gotDNSProtWelcomePageHTTPS']=$failed
             }
         }
@@ -374,7 +398,7 @@ try {
         Write-Result "Use of DNS Protection from this location appears to be allowed" 
         $collectResults['accessDNSProt']=$success
     } else {
-        Write-Result "Use of DNS Protection from this location appears to be allowed" 
+        Write-Result "Use of DNS Protection from this location appears to be NOT allowed" 
         $collectResults['accessDNSProt']=$failed
     }
 }
@@ -383,8 +407,9 @@ catch {
     Write-Result ( $_ | Format-Table|Out-String) 
     $collectResults['accessDNSProt']=$failed
 }
+
 # Test if the device is actually talking to the DNS Protection servers
-Write-Result "Test 5c: Checking that queries to DNS Protection aren't getting redirected..." 
+Write-Result "`nTest 5c: Checking that queries to DNS Protection aren't getting redirected..." 
 try {
     $dns = Resolve-DnsName -Name "dns.access.sophos.com" -Server "193.84.5.5" -ErrorAction Stop
     Write-Result ($dns | Format-Table | Out-String) 
@@ -404,14 +429,98 @@ catch {
     Write-Result ( $_ | Format-Table|Out-String) 
     $collectResults['queryRedirection']=$failed
 }
-Write-Result "End of test 5`n------" 
-Write-Result "Test 6: Running a DNS Leak Test using https://bash.ws" 
-if($collectResults['systemDNS'] -eq $success) {
-    Test-DnsLeaks
-} else {
-    Write-Result "    Looks like the system DNS is not working. Skipping."
+
+# Use the DNS Protection probe feature to get more information
+
+Write-Result "`n"
+Write-Result "Test 5d: Probing to get more DNS Protection status for this location..." 
+try {
+    $dnsProtectionResponse = Resolve-DnsName -Name "00000000-0000-0000-0000-000000000000.sfos.dns.access.sophos.com" -Server 193.84.4.4 -ErrorAction Stop -Type TXT
+    $result= ([Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($dnsProtectionResponse.Strings)) | ConvertFrom-JSON).response
+    $srcIp=$result.srcIp 
+    $status=$result.status
+    Write-Result "Test 5d - Your IP address appears to DNS Protection as $srcIp (status: $status)"
+    switch($result.status) {
+        "unknownip" {
+            Write-Result "This IP address is not configured as a location in DNS Protection"
+            $collectResults['location']=$failed
+            $collectResults['DNSProtSrcIp']="$srcIp"
+        }
+        "knownip" {
+            Write-Result "This IP address has been configured as a location in DNS Protection"
+            $collectResults['location']=$success
+            $collectResults['DNSProtSrcIp']="$srcIp"
+        }
+    }
 }
-Write-Result "End of test 6`n------" 
+catch {
+    Write-Result "Error running probe query against 193.84.4.4" 
+    Write-Result ( $_ | Format-Table|Out-String) 
+    $collectResults['location']=$failed
+}
+# If a tenant ID string has been provided, let's try that
+if($tenant_id -ne "none") {
+    if($tenant_id -match '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+        
+        Write-Result "`n"
+        Write-Result "Test 5e: Using tenant ID $tenant_id to check Location config" 
+        try {
+            $dnsProtectionResponse = Resolve-DnsName -Name "$tenant_id.sfos.dns.access.sophos.com" -Server 193.84.4.4 -ErrorAction Stop -Type TXT
+            $result= ([Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($dnsProtectionResponse.Strings)) | ConvertFrom-JSON).response
+            $srcIp=$result.srcIp 
+            $status=$result.status
+            Write-Result "Test 5e - Your IP address appears to DNS Protection as $srcIp (status: $status)"
+            switch($result.status) {
+                "unknownip" {
+                    Write-Result "This IP address is not configured as a location in DNS Protection"
+                    $collectResults['locationWithTenant']=$status
+                    $collectResults['DNSProtSrcIp']="$srcIp"
+                }
+                "protected" {
+                    Write-Result "This IP address belongs to a Location in your Central account with the given Tenant ID."
+                    $collectResults['locationWithTenant']=$success
+                    $collectResults['DNSProtSrcIp']="$srcIp"
+                }
+                "ipconflictlocation" {
+                    Write-Result "This IP address is a known location, but not for this tenant ID. It has been claimed by another Central account."
+                    $collectResults['locationWithTenant']=$result.status
+                    $collectResults['DNSProtSrcIp']="$srcIp"
+                }
+                "miscellaneous" {
+                    Write-Result "The probe query was not understood by DNS Protection - perhaps this isn't a valid Tenant ID format"
+                    $collectResults['locationWithTenant']=$result.status
+                    $collectResults['DNSProtSrcIp']="$srcIp"
+                }
+            }
+        }
+        catch {
+            Write-Result "Error running tenant ID probe query against 193.84.4.4" 
+            Write-Result ( $_ | Format-Table|Out-String) 
+            $collectResults['locationWithTenant']=$failed
+        }
+    } else {
+        Write-Result "Test 5e: Skipping - Supplied tenant ID '$tenant_id' doesn't have the right UUID-style format"
+    }
+}
+
+Write-Result "End of test 5`n------" 
+
+
+
+Write-Result "`n"
+if($skip_leaktest) {
+   Write-Result "Test 6: Skipping DNS Leak test"
+} else {
+    Write-Result "Test 6: Running a DNS Leak Test using https://bash.ws" 
+    if($collectResults['systemDNS'] -eq $success) {
+        Test-DnsLeaks
+    } else {
+        Write-Result "    Looks like the system DNS is not working. Skipping."
+    }
+    Write-Result "End of test 6`n------" 
+}
+
+Write-Result "`n"
 Write-Result "Test 7a: Checking the apparent source IP address for this location via HTTPS..."
 try {
     Invoke-WebRequest -Uri https://api.myip.com -ErrorAction Stop | Write-Result
@@ -423,6 +532,8 @@ catch {
     Invoke-WebRequest -Uri "https://$knownIP_api_myip/" -Headers @{Host='api.myip.com'} | Write-Result
 }
 
+
+Write-Result "`n"
 Write-Result "Test 7b: Checking the apparent source IP address via DNS..." 
 try {
     Resolve-DnsName -Name myip.opendns.com -Server resolver3.opendns.com -ErrorAction Stop | Write-Result
@@ -451,29 +562,35 @@ if($collectResults['systemDNS'] -eq $success) {
     Write-Result "`nSystem DNS access test failed - skipping"
 }
 
-$region_hostnames = @{
-    "PROD0" = "af45696a9d98ae9b5.awsglobalaccelerator.com"
-    "PROD1" = "af39f12a3abbc288b.awsglobalaccelerator.com"
-    "PROD2" = "a96ba037364f66208.awsglobalaccelerator.com"
-    "PROD3" = "a55ca1360a42b9e25.awsglobalaccelerator.com"
-    "PROD4" = "a66562e2168e6f91e.awsglobalaccelerator.com"
-    "PROD5" = "acec48d591c5f7b0c.awsglobalaccelerator.com"
-    "PROD6" = "a28fbfe39bd2d0a91.awsglobalaccelerator.com"
-    "PROD7" = "a5cd470aace53e730.awsglobalaccelerator.com"
-}
-
-if($collectResults['accessDNSProt'] -eq $success) {
-    $region_hostnames.getEnumerator() | Sort-Object -property:Key | ForEach {
-        Write-Result "`nCheck latency to Sophos DNS Protection ($($_.key))"
-        $ips = Resolve-DnsName -Name $_.value -Type A -Server "193.84.4.4" -DnsOnly -ErrorAction Stop | Select-Object -Property IPAddress
-        Test-DNSLatency -testname www.example.com -res $ips[0].IPAddress
-    }
-} else {
-    Write-Result "`nSophos DNS Protection access test failed - skipping"
-}
-
 Write-Result "End of test 8`n------"
 
+if($skip_regions) {
+    Write-Result "Test 8b: Skipping regional latency tests"
+    } else {
+    Write-Result "Test 8b: Checking DNS query latency to different regions"
+    $region_hostnames = @{
+        "Dublin, Ireland - Pre-production" = "af45696a9d98ae9b5.awsglobalaccelerator.com"
+        "Sydney, Australia" = "af39f12a3abbc288b.awsglobalaccelerator.com"
+        "Tokyo, Japan" = "a96ba037364f66208.awsglobalaccelerator.com"
+        "Mumbai, India" = "a55ca1360a42b9e25.awsglobalaccelerator.com"
+        "Frankfurt, Germany" = "a66562e2168e6f91e.awsglobalaccelerator.com"
+        "Ohio, USA" = "acec48d591c5f7b0c.awsglobalaccelerator.com"
+        "London, UK" = "a28fbfe39bd2d0a91.awsglobalaccelerator.com"
+        "Oregon, USA" = "a5cd470aace53e730.awsglobalaccelerator.com"
+    }
+
+    if($collectResults['accessDNSProt'] -eq $success) {
+        $region_hostnames.getEnumerator() | Sort-Object -property:Key | ForEach {
+            Write-Result "`nCheck latency to Sophos DNS Protection ($($_.key))"
+            $ips = Resolve-DnsName -Name $_.value -Type A -Server "193.84.4.4" -DnsOnly -ErrorAction Stop | Select-Object -Property IPAddress
+            Test-DNSLatency -testname www.example.com -res $ips[0].IPAddress
+        }
+    } else {
+        Write-Result "`nSophos DNS Protection access test failed - skipping"
+    }
+
+    Write-Result "End of test 8b`n------"
+}
 # Get the device's DNS settings
 Write-Result "`nRetrieving the device's DNS settings..."
 $i = 0
@@ -494,9 +611,11 @@ Write-Result "Summary of test results`n======================="
 Write-Result ( $collectResults | Format-Table | Out-String)
 
 #End of tests
-Write-Result "Test finished - DNS Diagnostics at $(Get-Date -Format "yyyy-MM-dd hh:mm:ss K")"
+Write-Result "Test finished - DNS Diagnostics at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss K")"
 
 if($outputFile -ne "") {
     Write-Result "Test output has been written to $outputFile" 
-    notepad $outputFile
+    if(!$no_open) {
+        notepad $outputFile
+    }
 } 

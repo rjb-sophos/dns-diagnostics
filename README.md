@@ -4,8 +4,21 @@ Tools to help diagnose issues with DNS, particularly geared around problems gett
 This PowerShell script will run a series of tests to evaluate different aspects of the DNS configuration of a Windows device. It can help provide answers to many of the common detailed questions that come up when you've tried to deploy DNS Protection and it 'doesn't work'.
 It writes detailed output from the tests to a file called `network_diagnostics.txt` in the current directory where you run it from.
 It is mostly aimed at providing a dump of output that a human can analyze, and makes minimal efforts to interpret the results of its tests. That’s something for the future!
+## Usage
+   `.\dnsdiag.ps1 [-no_open] [-skip_leaktest] [-skip_regions] [-outputFile "[Filename]"] [-tenant_id <UUID>] `
 
-It runs through the following tests:
+      -no_open       Do not open the output file in Notepad at the end
+      -skip_leaktest Don't run the full DNS Leak Test
+      -skip_regions  Don't run the region-by-region latency checks
+      -no_html       Don't output the blockpage HTML in the results
+      -outputFile    Write output to a different file instead of `network_diagnostics.txt`. A blank
+                     value ("") will write all output to the console (ugh!).
+      -tenant_id     Provide your Sophos Central account ID (a uuid in the form  
+                     00000000-0000-0000-0000-000000000000) for extra checks
+
+## Description
+
+The script runs through the following tests:
 
 1. Test if DNS resolution is working by just issuing DNS requests using system defaults
 
@@ -26,6 +39,10 @@ It runs through the following tests:
    1. Check you appear to be at a recognized location by querying www.google.com against 193.84.4.4 and 193.84.5.5
 
    1. Checks to confirm that it is actually DNS Protection by querying dns.access.sophos.com against 193.84.4.4
+
+   1. Uses special TXT probe queries supported by DNS Protection to confirm the source IP that DNS Protection sees, and whether your IP is a known 'Location' in an account
+
+   1. If you provide your Sophos Central unique account ID at the command line, it will repeat the test to confirm that the IP address is actually registered to a location in your account. 
 
 1. Runs a DNS Leak Test using https://bash.ws and displays the list of DNS servers that queries are coming from. The data returned also includes the apparent source IP address, taken from the HTTPS requests to the service (not from the DNS queries)
 
