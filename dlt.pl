@@ -18,6 +18,7 @@ use Term::ANSIColor qw(:constants);
 use JSON;
 use MIME::Base64;
 use Net::IP;
+use SFOS::Common::Central::CustomerInfo;
 
 my %opts;
 getopts('s:', \%opts);
@@ -49,15 +50,13 @@ sub get_hostname_for_ip {
         my $hostname = $1;
         return $hostname if $hostname && $hostname ne $ip;
     }
-    return undef;
+    return;
 }
 
-my $result_json;
 sub print_servers {
-    my $type = shift;
+    my ($type, $data) = @_;
     my @results;
     
-    my $data = decode_json($result_json);
     foreach my $entry (@$data) {
         next unless $entry->{type} eq $type;
         
@@ -95,7 +94,7 @@ sub do_statuslookup {
 
     echo_bold("Checking queries to $server_desc are answered by DNS Protection");
 
-    my $output=qx{nslookup '$host' '$server'};
+    my $output=qx{nslookup -type=TXT '$host' '$server'};
     if ($output =~ /can't resolve/) {
         echo_error("NXDOMAIN received - suggests you're reaching a DNS server that's not Sophos DNS Protection");
         return 1;
@@ -132,13 +131,14 @@ sub do_test {
     }
 
     # Get results
-    $result_json = qx{curl --silent https://$api_domain/dnsleak/test/$id?json};
+    my $result_json = qx{curl --silent https://$api_domain/dnsleak/test/$id?json};
+    my $dnsleak_data = decode_json($result_json);
 
-    my @dns_servers = print_servers("dns");
+    my @dns_servers = print_servers("dns", $dnsleak_data);
     my $dns_count = scalar(@dns_servers);
 
     echo_bold("Your IP address for accessing the leak test HTTPS server:");
-    print "$_\n" for print_servers("ip");
+    print "$_\n" for print_servers("ip", $dnsleak_data);
 
     print "\n";
     if ($dns_count == 0) {
@@ -155,13 +155,20 @@ if($dns_server eq 'auto') {
     # Do a quick check to see if queries to DNS Protection IP addresses are actually reaching
     # DNS Protection resolvers and not being redirected.
     #
-    # This test uses an arbitrary UUID for the tenant ID portion. It's just testing that there's a
-    # DNS protection resolver at the other end, not trying to validate it's a location for this
-    # customer.
-    #
-    # TODO: is there a way to get the customer's tenant ID here?
-    do_statuslookup("7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE.sfos.dns.access.sophos.com","193.84.4.4");
-    do_statuslookup("7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE.sfos.dns.access.sophos.com","193.84.5.5");
+    # This test tries to get the customer's actual tenant ID. If this fails (e.g. they're not
+    # registered to Central)  it uses an arbitrary UUID for the tenant ID portion. It still gives
+    # valuable feedback about whether it's genuinely reaching a DNS Protection resolver, even
+    # if it seems like it's saying there's a location clash, or something.
+ 
+    my $customer_info = SFOS::Common::Central::CustomerInfo::get([qw(customer_id)]);
+    my $tenant_id = $customer_info->{customer_id} // '7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE';
+    if(defined $customer_info->{customer_id}) {
+        print("Using this device's tenant ID $tenant_id\n");
+    } else {
+        print("Not joined to central - using a generic tenant id\n");
+    }
+    do_statuslookup("$tenant_id.sfos.dns.access.sophos.com","193.84.4.4");
+    do_statuslookup("$tenant_id.sfos.dns.access.sophos.com","193.84.5.5");
     print("\n");
 
     # Now do the actual leak tests to see where queries are being resolved
