@@ -1,7 +1,15 @@
 #!/usr/bin/env perl
-# usage:   ./dnsleaktest.pl [-d dns_server_ip]
-# example: ./dnsleaktest.pl -i eth1
-#          ./dnsleaktest.pl -i 10.0.0.2
+# This script is tailored for running on SFOS using commands and modules that are
+# available (tested on 21.5 GA)
+#
+# usage:   dlt.pl [-s dns_server_ip]
+
+# example: dlt.pl                <- 3-way auto test against DNS Protection direct, 
+#                                   locally configured DNS servers then System resolver    
+#          dlt.pl -s 193.84.4.4  <- leak test against DNS Protection
+#          dlt.pl -s 127.0.0.1   <- leak test against the SFOS DNS resolver
+#          dlt.pl -s default     <- leak test against the shell's default resolver from /etc/resolv.conf
+#                                   (should be 127.0.0.1)                                             
 
 use strict;
 use warnings;
@@ -9,10 +17,11 @@ use Getopt::Std;
 use Term::ANSIColor qw(:constants);
 use JSON;
 use MIME::Base64;
+use Net::IP;
 
 my %opts;
-getopts('d:', \%opts);
-my $dns_server = $opts{d} || '';
+getopts('s:', \%opts);
+my $dns_server = $opts{s} || 'auto';
 my $api_domain = 'bash.ws';
 my $error_code = 1;
 
@@ -30,7 +39,10 @@ sub echo_error {
 
 sub get_hostname_for_ip {
     my $ip = shift;
-    my $output = `nslookup $ip 2>/dev/null`;
+# SFOS's nslookup doesn't automatically handle IPv6 reverse lookups, so we have to
+# convert the address to a reverse lookup name ourselves
+    my $reverse_ip = Net::IP->new($ip)->reverse_ip;
+    my $output = qx{nslookup -type=PTR '$reverse_ip'};
     
     # Check for hostname in nslookup output
     if ($output =~ /Resolved Address 1#\s*([^\s]+)/) {
@@ -76,17 +88,20 @@ sub print_servers {
     return @results;
 }
 
-sub nslookup {
+sub do_statuslookup {
     my $host=shift;
     my $server=shift || '';
-    my $cmd = "nslookup $host $server";
-    my $output=`$cmd 2>/dev/null`;
+    my $server_desc=($server eq '') ? 'default server' : $server;
+
+    echo_bold("Checking queries to $server_desc are answered by DNS Protection");
+
+    my $output=qx{nslookup '$host' '$server'};
     if ($output =~ /can't resolve/) {
-        print("NXDOMAIN received\n");
+        echo_error("NXDOMAIN received - suggests you're reaching a DNS server that's not Sophos DNS Protection");
         return 1;
     }
     if ($output =~ /connection timed out/) {
-        print("DNS server not responding\n");
+        echo_error("DNS server not responding - suggests traffic is blocked");
         return 2;
     }
     if ($output =~ /Resolved Address 1#\s*("[^"]+")/) {
@@ -94,35 +109,30 @@ sub nslookup {
         print(decode_base64($1)."\n");
         return 0;
     }
-
+    return 3;
 }
 
 sub do_test {
     my $dns_server = shift;
+    my $proto = shift || 'udp';
+    my $proto_switch = ($proto eq 'tcp') ? '-vc':'';
     if($dns_server eq '') {
-        echo_bold("Leak test for queries to default DNS server...")
+        echo_bold("Leak test for $proto queries to default DNS server...")
     } else {
-        echo_bold("Leak test for queries to $dns_server...")
+        echo_bold("Leak test for $proto queries to $dns_server...")
     }
 
     # Get ID
-    my $id;
-    {
-        my $cmd = "curl " . "--silent https://$api_domain/id";
-        $id = `$cmd`;
-        chomp $id;
-    }
+    my $id= qx{curl --silent https://$api_domain/id};
+    chomp $id;
 
     # Ping servers
     for my $i (1..10) {
-    #    my $cmd = "ping -c 1 " . ($interface ? "-I $interface " : "") . "$i.$id.$api_domain > /dev/null 2>&1";
-        my $cmd = "nslookup $i.$id.$api_domain $dns_server > /dev/null 2>&1";
-        system($cmd);
+        my $ignore=qx{nslookup $proto_switch $i.$id.$api_domain $dns_server};
     }
 
     # Get results
-    my $cmd = "curl " . "--silent https://$api_domain/dnsleak/test/$id?json";
-    $result_json = `$cmd`;
+    $result_json = qx{curl --silent https://$api_domain/dnsleak/test/$id?json};
 
     my @dns_servers = print_servers("dns");
     my $dns_count = scalar(@dns_servers);
@@ -141,19 +151,29 @@ sub do_test {
     print "\n";
 }
 
-if($dns_server eq '') {
-    echo_bold("Checking queries to 193.84.4.4 are answered by DNS Protection");
-    nslookup("7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE.sfos.dns.access.sophos.com","193.84.4.4");
-    echo_bold("Checking queries to 193.84.5.5 are answered by DNS Protection");
-    nslookup("7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE.sfos.dns.access.sophos.com","193.84.4.4");
+if($dns_server eq 'auto') {
+    # Do a quick check to see if queries to DNS Protection IP addresses are actually reaching
+    # DNS Protection resolvers and not being redirected.
+    #
+    # This test uses an arbitrary UUID for the tenant ID portion. It's just testing that there's a
+    # DNS protection resolver at the other end, not trying to validate it's a location for this
+    # customer.
+    #
+    # TODO: is there a way to get the customer's tenant ID here?
+    do_statuslookup("7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE.sfos.dns.access.sophos.com","193.84.4.4");
+    do_statuslookup("7AA3F4DC-5264-4AF1-8CA0-60D5127F3BBE.sfos.dns.access.sophos.com","193.84.5.5");
     print("\n");
 
-    do_test('193.84.4.4');
-    do_test(''); # test with the system's default resolver
+    # Now do the actual leak tests to see where queries are being resolved
     do_test('127.0.0.1');
+    do_test('193.84.4.4');
+    do_test('193.84.4.4','tcp');
 } else {
-    do_test($dns_server);
+    if($dns_server eq 'default') {
+        do_test('');
+    } else {
+        do_test($dns_server);    
+    }
 }
-
 
 exit 0;
