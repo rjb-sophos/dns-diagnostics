@@ -172,9 +172,16 @@ if($dns_server eq 'auto') {
     print("\n");
 
     # Now do the actual leak tests to see where queries are being resolved
+    echo_bold("Check if queries to the Firewall's DNS resolver are leaking");
     do_test('127.0.0.1');
+    echo_bold("Check if UDP queries to DNS Protection on 193.84.4.4 are leaking");
     do_test('193.84.4.4');
+    echo_bold("Check if UDP queries to DNS Protection on 193.84.5.5 are leaking");
+    do_test('193.84.5.5');
+    echo_bold("Check if TCP queries to DNS Protection on 193.84.4.4 are leaking - some networks that redirect DNS forget about TCP traffic");
     do_test('193.84.4.4','tcp');
+    echo_bold("Check if UDP queries to Google DNS on 8.8.8.8 are leaking - all resolvers should be on Google networks");
+    do_test('8.8.8.8');
 } else {
     if($dns_server eq 'default') {
         do_test('');

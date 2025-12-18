@@ -79,3 +79,26 @@ To enable all scripts to be run just for the lifetime of your current PowerShell
 ```
 PS C:\> Set-ExecutionPolicy -Scope Process -ExecutionPolicy Unrestricted
 ```
+# dlt.pl
+
+This tool is designed to run at the command line of a Sophos Firewall and makes use of Perl modules specific to the Firewall. It provides a way to do a DNS leak test directly from the Firewall itself, instead of just running a Leak Test web page on a browser inside the network. Running the test on the Firewall allows you to rule out possible issues on the internal network and focus on whether DNS traffic is being diverted downstream from your Firewall by your ISP or a network gateway device outside of the Firewall.
+
+## Usage
+   `perl dlt.pl [-s <ip address>]`
+
+      -s <ip address>   Just run a single leak test against the DNS server at this ip address, using UDP port 53
+
+
+With no command line arguments, it starts by doing the diagnostic DNS queries that will only be answered by DNS Protection, and that can confirm if your Firewall's IP address is known and is a registered Location in DNS Protection for your Central account.
+
+It then performs leak tests using 5 DNS resolver addresses:
+
+1. The Firewall's built-in DNS server, which forwards queries to the configured servers and falls back to recursive resolution if that fails
+
+1. DNS Protection on 193.84.4.4 using UDP
+
+1. DNS Proteciton on 193.84.5.5 using UDP
+
+1. DNS Protection on 193.84.4.4 using TCP - sometimes when DNS is being diverted, only UDP traffic is affected.
+
+1. Google DNS on 8.8.8.8 using UDP - if traffic to DNS Protection is being diverted, it might be interesting to see if that's happening for Google DNS as well.
